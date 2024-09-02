@@ -152,7 +152,7 @@ def display_summary(summary, type_of_change):
     print(f"Resources with no operation: {summary['no_op']}")
 
 
-def find_differences(before, after):
+def find_differences(before, after, path=""):
     """
     Find the differences between the before and after state of a terraform plan changes.
     :param before: Dictionary of before variables values
@@ -165,28 +165,46 @@ def find_differences(before, after):
         "changed": {}
     }
 
-    # Identify added or changed attributes
-    if after:
-        for key in after:
-            if before:
-                if key not in before:
-                    differences["added"][key] = after[key]
-                elif before[key] != after[key]:
-                    differences["changed"][key] = {
-                        "before": before[key],
-                        "after": after[key]
-                    }
-            else:
-                differences["added"][key] = after[key]
+    # Compare dictionaries
+    if isinstance(before, dict) and isinstance(after, dict):
+        before_keys = set(before.keys())
+        after_keys = set(after.keys())
 
-    # Identify removed attributes
-    if before:
-        for key in before:
-            if after:
-                if key not in after:
-                    differences["removed"][key] = before[key]
-            else:
-                differences["removed"][key] = before[key]
+        for key in after_keys - before_keys:
+            differences["added"][f"{path}.{key}".strip(".")] = after[key]
+
+        for key in before_keys - after_keys:
+            differences["removed"][f"{path}.{key}".strip(".")] = before[key]
+
+        for key in before_keys & after_keys:
+            sub_diff = find_differences(before[key], after[key], path=f"{path}.{key}".strip("."))
+            differences["added"].update(sub_diff["added"])
+            differences["removed"].update(sub_diff["removed"])
+            differences["changed"].update(sub_diff["changed"])
+
+    # Compare lists
+    elif isinstance(before, list) and isinstance(after, list):
+        for i, (b_item, a_item) in enumerate(zip(before, after)):
+            sub_diff = find_differences(b_item, a_item, path=f"{path}[{i}]")
+            differences["added"].update(sub_diff["added"])
+            differences["removed"].update(sub_diff["removed"])
+            differences["changed"].update(sub_diff["changed"])
+
+        # Handle added or removed items in lists
+        if len(after) > len(before):
+            for i in range(len(before), len(after)):
+                differences["added"][f"{path}[{i}]".strip(".")] = after[i]
+        elif len(before) > len(after):
+            for i in range(len(after), len(before)):
+                differences["removed"][f"{path}[{i}]".strip(".")] = before[i]
+
+    # Compare values directly
+    else:
+        if before != after:
+            differences["changed"][path] = {
+                "before": before,
+                "after": after
+            }
 
     return differences
 
@@ -196,6 +214,7 @@ def get_the_differences(before, after):
 
     if differences["added"] or differences["removed"] or differences["changed"]:
         return differences
+
 
 def generate_json_files(changes, type_of_change):
     """
