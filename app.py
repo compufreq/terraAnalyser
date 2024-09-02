@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 
 
 def load_terraform_plan(file_path):
@@ -19,6 +20,8 @@ def change_details(change, action):
     :return: Restructured object for analysis
     """
     control_actions = ["create", "delete", "update", "replace"]
+    resource_address = change.get("address", "")
+    module_address = change.get("module_address", "")
     resource_name = change.get("name")
     resource_type = change.get("type")
     resource_actions = change.get("change", {}).get("actions", [])
@@ -26,6 +29,8 @@ def change_details(change, action):
         resource_before = change.get("change", {}).get("before", {})
         resource_after = change.get("change", {}).get("after", {})
         resource = {
+            "resource_address": resource_address,
+            "module_address": module_address,
             "name": resource_name,
             "type": resource_type,
             "actions": resource_actions,
@@ -36,6 +41,8 @@ def change_details(change, action):
         }
     else:
         resource = {
+            "resource_address": resource_address,
+            "module_address": module_address,
             "name": resource_name,
             "type": resource_type,
             "actions": resource_actions,
@@ -77,6 +84,9 @@ def analyse_plan(plan, type_of_change):
     if not changes:
         return None  # No changes detected
 
+    resource_modules = {}
+
+    module_resources = {}
     for change in changes:
         action = change.get("change", {}).get("actions", [])
         if "create" in action:
@@ -98,8 +108,34 @@ def analyse_plan(plan, type_of_change):
         if "no-op" in action:
             summary["no_op"] += 1
             changes_dict["no_op"].append(change_details(change, action))
+        # Group resources by module
 
-    return changes_dict, summary
+        module_address = change.get("module_address", "")
+        resource_address = change.get("address", "")
+        resource_name = change.get("name")
+        if resource_address and module_address:
+            if resource_modules.get(resource_name) is None:
+                resource_modules[resource_name]=[module_address]
+            else:
+                resource_modules[resource_name].append(module_address)
+
+            if resource_address and module_address:
+                if module_resources.get(module_address) is None:
+                    module_resources[module_address] = [
+                        {
+                            "resource_name": resource_name,
+                            "resource_address": resource_address
+                        }
+                    ]
+                else:
+                    module_resources[module_address].append(
+                        {
+                            "resource_name": resource_name,
+                            "resource_address": resource_address
+                        }
+                    )
+
+    return changes_dict, summary, resource_modules, module_resources
 
 
 def display_detailed_changes(detailed_changes, type_of_change):
@@ -216,7 +252,7 @@ def get_the_differences(before, after):
         return differences
 
 
-def generate_json_files(changes, type_of_change):
+def generate_json_files_for_changes(changes, type_of_change):
     """
     Output all the changes in their relative json files.
     :param changes: The classified dictionary of changes coming from analyse_plan(plan, change_type) function
@@ -228,6 +264,20 @@ def generate_json_files(changes, type_of_change):
             json.dump(change_value, file)
 
 
+def generate_json_files_for_modules_resources(resource_modules, module_resources):
+    """
+    Output two files, one contains the resource and its shared modules and the other module and its shared resources.
+    :param resource_modules: Dictionary of resources and their shared modules
+    :param module_resources: Dictionary of modules and their shared resources
+    :return:
+    """
+    if resource_modules:
+        with open(f"outputs/resource_modules.json", "w") as file:
+            json.dump(resource_modules, file)
+    if module_resources:
+        with open(f"outputs/module_resources.json", "w") as file:
+            json.dump(module_resources, file)
+
 def main():
     change_types = ["resource_drift", "resource_changes"]
     # Path to the Terraform plan JSON file
@@ -237,13 +287,15 @@ def main():
         plan = load_terraform_plan(file_path)
 
         # Analyze the plan
-        detailed_changes, summary = analyse_plan(plan, change_type)
+        detailed_changes, summary, resource_modules, module_resources = analyse_plan(plan, change_type)
 
         # Display the analysis summary
         display_summary(summary, change_type)
-        display_detailed_changes(detailed_changes, change_type)
-        generate_json_files(detailed_changes, change_type)
+        # display_detailed_changes(detailed_changes, change_type)
+        generate_json_files_for_changes(detailed_changes, change_type)
 
+        # Output the shared resources between modules and the shared modules between resources
+        generate_json_files_for_modules_resources(resource_modules, module_resources)
 
 if __name__ == "__main__":
     main()
